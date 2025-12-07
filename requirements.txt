@@ -1,0 +1,8 @@
+pandas
+numpy
+scikit-learn
+shap
+apscheduler
+python-dotenv
+openai>=1.6.0
+pyttsx3
