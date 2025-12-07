@@ -288,3 +288,4 @@ streamlit run app.py
 - ✅ AI Anomaly Analysis
 - ✅ Interactive graphs & anomaly tables
 - ✅ Auto-generated PDF reports inside the `reports/` folder
+- ✅ .bin files are inside the `data/` folder to view the raw data
