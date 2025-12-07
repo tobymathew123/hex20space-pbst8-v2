@@ -191,8 +191,7 @@ AI Mission Briefing + AI Diagnostics + AI Recommendations
 Scheduled PDF Report Generator
         ↓
 Streamlit Interactive GUI
-
-
+```
 ## 🛠️ Installation Guide (Complete Setup)
 
 ### ✅ Step 1 — Clone the Repository
