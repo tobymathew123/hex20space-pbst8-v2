@@ -1,6 +1,8 @@
 import streamlit as st
 import plotly.express as px
 from datetime import datetime, time as dt_time, timedelta, timezone
+import json
+from pathlib import Path
 
 from telemetry.nightly_job import run_nightly_job
 from telemetry.visual_data import get_timeseries_for_ui, summarize_for_ui
@@ -12,6 +14,17 @@ from telemetry.decoder import decode_bin_to_df
 from telemetry.anomaly import train_anomaly_model, run_detection, compute_summary_stats
 
 IST = timezone(timedelta(hours=5, minutes=30))
+LAST_SCHEDULED_FILE = Path("data/last_scheduled_run.json")
+
+def load_last_scheduled_run():
+    if not LAST_SCHEDULED_FILE.exists():
+        return None
+    try:
+        with open(LAST_SCHEDULED_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        return None
+
 
 st.set_page_config(
     page_title="AI Telemetry Nightly Test Tool",
@@ -24,12 +37,14 @@ st.markdown("**CubeSat Health Monitoring • Anomaly Detection • AI Mission Br
 if "data_loaded" not in st.session_state:
     st.session_state["data_loaded"] = False
 
+if "active_run_source" not in st.session_state:
+    st.session_state["active_run_source"] = None
 
-# SIDEBAR CONTROLS
+
+# ===================== SIDEBAR =====================
 
 st.sidebar.header("Controls")
 
-# Manual pipeline steps
 st.sidebar.subheader("Manual Pipeline Steps")
 
 manual_step = st.sidebar.selectbox(
@@ -63,47 +78,64 @@ if st.sidebar.button("Run Selected Step"):
             f"/ {stats.get('total_packets', len(df_det))}"
         )
         st.session_state["data_loaded"] = True
-    else:
-        st.sidebar.info("Select a step to run.")
+
 
 st.sidebar.markdown("---")
 
-# One-click nightly demo
-if st.sidebar.button("▶ Run Nightly Test (Demo)"):
+if st.sidebar.button("▶ Run Nightly Test"):
     with st.spinner("Running full nightly pipeline (Generate → Detect → AI Briefing)..."):
         summary = run_nightly_job()
     st.session_state["last_nightly_summary"] = summary
     st.session_state["data_loaded"] = True
+    st.session_state["active_run_source"] = "manual"
     st.sidebar.success("Nightly job completed!")
-    st.sidebar.write(f"Anomalies: {summary['anomaly_count']}")
-    st.sidebar.write(f"PDF report: {summary['report_pdf']}")
+
 
 st.sidebar.markdown("---")
 
-
 st.sidebar.subheader("Time Scheduling (IST)")
 
-default_time = dt_time(hour=2, minute=0)
 schedule_time = st.sidebar.time_input(
     "Daily run time (HH:MM, IST)",
-    value=default_time,
-    help="Nightly job will run automatically at this local time every day.",
+    value=dt_time(hour=2, minute=0),
 )
 
 if st.sidebar.button("Start Daily Scheduler"):
     start_scheduler(hour=schedule_time.hour, minute=schedule_time.minute)
     st.sidebar.success(
-        f"Scheduler started. Nightly job will run automatically at "
-        f"{schedule_time.hour:02d}:{schedule_time.minute:02d} IST each day."
+        f"Nightly job scheduled at {schedule_time.hour:02d}:{schedule_time.minute:02d} IST."
     )
 
-st.sidebar.markdown("---")
-st.sidebar.caption(
-    "Manual steps + automatic scheduler together show the full nightly test workflow."
+
+# ===================== RUN SELECTION =====================
+
+st.markdown("---")
+st.subheader("📂 Select Telemetry Run to Review")
+
+run_option = st.radio(
+    "Choose which telemetry run to inspect:",
+    [ "Latest Manual Run", "Last Scheduled Nightly Run"],
+    horizontal=True,
 )
 
+if run_option == "Latest Manual Run":
+    if "last_nightly_summary" in st.session_state:
+        st.session_state["data_loaded"] = True
+        st.session_state["active_run_source"] = "manual"
+    else:
+        st.warning("No manual nightly run available yet.")
 
-# LOAD DATA
+elif run_option == "Last Scheduled Nightly Run":
+    scheduled = load_last_scheduled_run()
+    if scheduled is None:
+        st.warning("No scheduled nightly run available yet.")
+    else:
+        st.session_state["data_loaded"] = True
+        st.session_state["active_run_source"] = "scheduled"
+
+
+# ===================== LOAD DATA =====================
+
 df = None
 summary = None
 
@@ -112,51 +144,41 @@ if st.session_state["data_loaded"]:
     summary = summarize_for_ui(df)
 
 
-# MISSION SUMMARY
+# ===================== MISSION SUMMARY =====================
 
+st.markdown("---")
 st.subheader("📊 Mission Summary")
 
-
-def to_ist_time(ts_int: int) -> str:
-    try:
-        dt = datetime.fromtimestamp(ts_int, tz=IST)
-        return dt.strftime("%H:%M:%S")
-    except Exception:
-        return "-"
-
-
-def to_ist_date(ts_int: int) -> str:
-    try:
-        dt = datetime.fromtimestamp(ts_int, tz=IST)
-        return dt.strftime("%Y-%m-%d")
-    except Exception:
-        return "-"
-
-
 if summary is None:
-    st.info("No telemetry run loaded yet. Run the nightly test demo or detection from the sidebar.")
+    st.info("No telemetry run loaded yet.")
 else:
     col1, col2, col3 = st.columns(3)
     col1.metric("Total Packets", summary["total_packets"])
     col2.metric("Anomalies Detected", summary["anomaly_count"])
-    span_val = f"{to_ist_time(summary['first_timestamp'])} → {to_ist_time(summary['last_timestamp'])}"
-    col3.metric("Time Span (IST)", span_val)
-    date_span = f"{to_ist_date(summary['first_timestamp'])} → {to_ist_date(summary['last_timestamp'])}"
-    st.caption(f"Date span (IST): {date_span}")
+    col3.metric("Time Span (IST)",
+        f"{datetime.fromtimestamp(summary['first_timestamp'], IST).strftime('%H:%M:%S')} → "
+        f"{datetime.fromtimestamp(summary['last_timestamp'], IST).strftime('%H:%M:%S')}"
+    )
 
 
-# AI NIGHTLY MISSION BRIEFING
+# ===================== AI BRIEFING =====================
 
 st.markdown("---")
 st.subheader("🛰️ AI Nightly Mission Briefing")
 
-if "last_nightly_summary" in st.session_state:
+if st.session_state["active_run_source"] == "manual":
     st.write(st.session_state["last_nightly_summary"]["briefing"])
+elif st.session_state["active_run_source"] == "scheduled":
+    scheduled = load_last_scheduled_run()
+    st.info(
+        "This briefing corresponds to the last scheduled nightly run. "
+        "Detailed insights are available in the generated report."
+    )
 else:
-    st.info("Run the nightly test demo from the sidebar to generate an AI mission briefing.")
+    st.info("Select a telemetry run to view the mission briefing.")
 
 
-# AI Q&A + ANOMALY ANALYSIS 
+# ===================== AI Q&A + ANALYSIS =====================
 
 if df is not None:
     st.markdown("---")
@@ -165,98 +187,40 @@ if df is not None:
     user_question = st.text_input("Ask anything about the telemetry data:")
 
     if st.button("Ask AI"):
-        if not user_question.strip():
-            st.warning("Please enter a question.")
-        else:
-            with st.spinner("AI is analyzing your question..."):
-                result = ask_telemetry(user_question)
-
-            st.write("**Question:**")
-            st.info(result["question"])
-
-            st.write("**AI Answer:**")
+        if user_question.strip():
+            result = ask_telemetry(user_question)
             st.success(result["answer"])
 
-    # --- AI anomaly analysis section ---
     st.markdown("---")
     st.subheader("🧠 AI Anomaly Analysis")
 
-    if summary is not None:
-        total = summary["total_packets"]
-        acount = summary["anomaly_count"]
-        rate = (acount / total * 100.0) if total > 0 else 0.0
-        st.caption(f"Current run: {acount} anomalies out of {total} packets ({rate:.1f}% anomaly rate).")
-
-    st.write(
-        "This tool inspects the **most anomalous packet** from the latest run and "
-        "explains which subsystem might be affected and why the model flagged it."
-    )
-
     if st.button("Analyze Most Severe Anomaly"):
-        with st.spinner("AI is analyzing the most anomalous packet..."):
-            result = explain_top_anomaly()
-
+        result = explain_top_anomaly()
         if "message" in result:
             st.warning(result["message"])
         else:
-            st.write("**Packet Index (in current run):**", result["packet_index"])
-            st.write("**Anomaly Score:**", f"{result['anomaly_score']:.3f}")
-            st.write("**Packet Values:**")
-            st.json(result["packet"])
-            st.write("**AI Interpretation:**")
             st.success(result["explanation"])
 
-   
-    # GRAPHS + TABLE
- 
-    st.markdown("---")
-    with st.expander("📈 Telemetry Time-Series with Anomalies (click to expand)", expanded=False):
-        st.subheader("Telemetry Time-Series")
 
-        def plot_feature(feature_name, y_label):
+# ===================== GRAPHS =====================
+
+if df is not None:
+    st.markdown("---")
+    with st.expander("📈 Telemetry Time-Series with Anomalies", expanded=False):
+        for feature, label in [
+            ("battery_v", "Battery Voltage (V)"),
+            ("temp_c", "Temperature (°C)"),
+            ("panel_i", "Panel Current (A)"),
+        ]:
             fig = px.scatter(
                 df,
                 x="timestamp",
-                y=feature_name,
+                y=feature,
                 color="is_anomaly",
-                title=f"{feature_name} vs Time (Anomalies Highlighted)",
-                labels={
-                    "timestamp": "Time (epoch seconds)",
-                    feature_name: y_label,
-                    "is_anomaly": "Is Anomaly",
-                },
+                title=f"{label} vs Time",
             )
             st.plotly_chart(fig, use_container_width=True)
 
-        tab1, tab2, tab3 = st.tabs(["Battery Voltage", "Temperature", "Panel Current"])
 
-        with tab1:
-            plot_feature("battery_v", "Battery Voltage (V)")
-        with tab2:
-            plot_feature("temp_c", "Temperature (°C)")
-        with tab3:
-            plot_feature("panel_i", "Panel Current (A)")
-
-        st.markdown("---")
-        st.subheader("🚨 Detected Anomalies (Table)")
-        anom_df = df[df["is_anomaly"] == True].copy()
-        st.dataframe(
-            anom_df[[
-                "timestamp",
-                "battery_v",
-                "panel_i",
-                "temp_c",
-                "gyro_x",
-                "gyro_y",
-                "gyro_z",
-                "mode",
-                "anomaly_score",
-            ]].sort_values("anomaly_score", ascending=False),
-            use_container_width=True,
-        )
-
-# FOOTER
 st.markdown("---")
-st.caption(
-    "AI Telemetry Tool • Isolation Forest + OpenAI • Manual pipeline + scheduled nightly automation (IST)"
-)
+st.caption("AI Nightly Test Tool •")

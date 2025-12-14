@@ -1,8 +1,10 @@
+streamlit
 pandas
 numpy
 scikit-learn
-shap
+plotly
 apscheduler
+pytz
+openai
 python-dotenv
-openai>=1.6.0
-pyttsx3
+reportlab

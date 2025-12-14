@@ -1,5 +1,6 @@
 # telemetry/nightly_job.py
 from __future__ import annotations
+import json
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -24,6 +25,7 @@ from .tts import speak
 
 
 IST = timezone(timedelta(hours=5, minutes=30))
+LAST_SCHEDULED_FILE = Path("data/last_scheduled_run.json")
 
 
 def _draw_wrapped_text(
@@ -221,5 +223,17 @@ def run_nightly_job(
 
         speak("Here is the mission briefing.")
         speak(briefing)
+
+    # Persist last scheduled run for UI review
+    LAST_SCHEDULED_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(LAST_SCHEDULED_FILE, "w", encoding="utf-8") as f:
+        json.dump({
+        "timestamp": run_summary["timestamp_readable"],
+        "total_packets": run_summary["total_packets"],
+        "anomaly_count": run_summary["anomaly_count"],
+        "csv_file": run_summary["csv_file"],
+        "bin_file": run_summary["bin_file"],
+        "report_pdf": run_summary["report_pdf"]
+        }, f, indent=2)
 
     return run_summary
